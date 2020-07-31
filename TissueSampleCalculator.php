@@ -1,4 +1,5 @@
 <?php
+
 namespace Stanford\TissueSampleCalculator;
 
 require_once "emLoggerTrait.php";
@@ -14,6 +15,7 @@ require_once "emLoggerTrait.php";
  * @property int $sampleEventId
  * @property int $eventId
  * @property array $optionNumbers
+ * @property array $tissueRetrievalRecords
  */
 class TissueSampleCalculator extends \ExternalModules\AbstractExternalModule
 {
@@ -36,6 +38,7 @@ class TissueSampleCalculator extends \ExternalModules\AbstractExternalModule
 
     private $optionNumbers;
 
+    private $tissueRetrievalRecords;
 
     public function __construct()
     {
@@ -50,6 +53,7 @@ class TissueSampleCalculator extends \ExternalModules\AbstractExternalModule
             $this->setSampleRecordIdField($this->getProjectSetting('sample-record-id'));
 
             $this->setSampleEventId($this->getProjectSetting('sample-event-id'));
+
         }
     }
 
@@ -79,15 +83,19 @@ class TissueSampleCalculator extends \ExternalModules\AbstractExternalModule
                 // we need to set tissue retrieval record
                 if (!is_null($record)) {
                     $this->setRecord($record);
-
+                    $temp = $this->getRecord();
                     //set parent sample record
-                    $this->setSampleRecord($this->getRecord()[$this->getEventId()][$this->getSampleRecordIdField()]);
+                    $this->setSampleRecord($temp[$this->getEventId()][$this->getSampleRecordIdField()]);
                 } elseif (isset($_GET['parent'])) {
                     //set parent sample record
                     $this->setSampleRecord(filter_var($_GET['parent'], FILTER_SANITIZE_STRING));
                 }
 
-                $this->setRetrievalTypeNumbersFromSampleRecord();
+                if ($this->getSampleRecord()) {
+                    $this->setRetrievalTypeNumbersFromSampleRecord();
+                } else {
+                    throw new \Exception("no sample record found");
+                }
             }
         } catch (\Exception $e) {
             $this->emError($e->getMessage());
@@ -147,12 +155,16 @@ class TissueSampleCalculator extends \ExternalModules\AbstractExternalModule
                 //set event id
                 $this->setEventId($event_id);
 
+
+                $this->setTissueRetrievalRecords();
                 // we need to set tissue retrieval record
                 if (!is_null($record)) {
                     $this->setRecord($record);
-
+                    $temp = $this->getRecord();
                     //set parent sample record
-                    $this->setSampleRecord($this->getRecord()[$this->getEventId()][$this->getSampleRecordIdField()]);
+                    $this->setSampleRecord($temp[$this->getEventId()][$this->getSampleRecordIdField()]);
+
+                    $this->updateSampleRecord();
                 }
 
             }
@@ -160,6 +172,57 @@ class TissueSampleCalculator extends \ExternalModules\AbstractExternalModule
             $this->emError($e->getMessage());
             \REDCap::logEvent("ERROR/EXCEPTION occurred " . $e->getMessage(), '', null, null);
             echo json_encode(array('status' => 'error', 'message' => $e->getMessage()));
+        }
+    }
+
+    private function updateSampleRecord()
+    {
+        global $Proj;
+        $record = $this->getRecord();
+        $record = $record[$this->getEventId()];
+        // loop on defined instances to find the value that equals the selected tissue type.
+        foreach ($this->getInstances() as $instance) {
+            // this mean the saved value equal the defined value for the instance.
+            if ($record[$instance['tissue-type']] == $instance['tissue-type-option'] && $record['is_deducted'] == '') {
+                $sampleRecord = $this->getSampleRecord();
+                $sampleRecord = $sampleRecord[$this->getSampleEventId()];
+                $data[$instance['sample-field']] = $sampleRecord[$instance['sample-field']] - 1;
+                $data['redcap_event_name'] = $Proj->getUniqueEventNames($this->getSampleEventId());
+                $data['record_id'] = $sampleRecord['record_id'];
+                $response = \REDCap::saveData($this->getProjectId(), 'json', json_encode(array($data)));
+                if (!empty($response['errors'])) {
+                    if (is_array($response['errors'])) {
+                        throw new \Exception(implode(",", $response['errors']));
+                    } else {
+                        throw new \Exception($response['errors']);
+                    }
+                } else {
+                    $data = array();
+                    $data['redcap_event_name'] = $Proj->getUniqueEventNames($this->getEventId());
+                    $data['record_id'] = $record['record_id'];
+                    $data['is_deducted'] = 1;
+                    $response = \REDCap::saveData($this->getProjectId(), 'json', json_encode(array($data)));
+                    if (!empty($response['errors'])) {
+                        if (is_array($response['errors'])) {
+                            throw new \Exception(implode(",", $response['errors']));
+                        } else {
+                            throw new \Exception($response['errors']);
+                        }
+                    } else {
+                        $this->emLog("Tissue retrieved from Sample " . $record[$this->getSampleRecordIdField()]);
+                    }
+                }
+
+            }
+        }
+    }
+
+    private function getSampleFieldName($index)
+    {
+        foreach ($this->getInstances() as $instance) {
+            if ($instance['tissue-type-option'] == $index) {
+                return $instance['sample-field'];
+            }
         }
     }
 
@@ -230,7 +293,8 @@ class TissueSampleCalculator extends \ExternalModules\AbstractExternalModule
             'records' => [$record]
         );
 
-        $this->record = \REDCap::getData($param);
+        $r = \REDCap::getData($param);
+        $this->record = $r[$record];
     }
 
     /**
@@ -300,6 +364,26 @@ class TissueSampleCalculator extends \ExternalModules\AbstractExternalModule
     public function setOptionNumbers($optionNumbers)
     {
         $this->optionNumbers = $optionNumbers;
+    }
+
+    /**
+     * @return array
+     */
+    public function getTissueRetrievalRecords()
+    {
+        return $this->tissueRetrievalRecords;
+    }
+
+    /**
+     * @param array $tissueRetrievalRecords
+     */
+    public function setTissueRetrievalRecords()
+    {
+        $param = array(
+            'project_id' => $this->getProjectId(),
+            'event_id' => $this->getEventId()
+        );
+        $this->tissueRetrievalRecords = \REDCap::getData($param);
     }
 
 
